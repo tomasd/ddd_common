@@ -1,166 +1,88 @@
-import logging
 from time import mktime
+import functools
+import logging
 import kombu
 from kombu.mixins import ConsumerMixin
+
 from ddd_common import fullname
 
 
 def to_timestamp(timestamp):
     return int(mktime(timestamp.timetuple()))
 
-
-class BrokerChannel(object):
-    def __init__(self, channel, *args, **kwargs):
-        self._channel = channel
-        self._initialize(*args, **kwargs)
-
-    @property
-    def channel(self):
-        return self._channel
-
-    def close(self):
-        self.channel.close()
-
-    def _initialize(self, *args, **kwargs):
-        raise NotImplementedError(
-            '_initialize is not implemented in %r' % self.__class__)
-
-
-class Exchange(BrokerChannel):
+class Exchange(object):
     @classmethod
-    def direct_instance(cls, channel, name, durable):
-        return Exchange(channel, name, 'direct', durable)
+    def direct_instance(cls, exchange_name, durable=True):
+        return Exchange(exchange_name, 'direct', durable)
 
     @classmethod
-    def fanout_instance(cls, channel, name, durable):
-        return Exchange(channel, name, 'fanout', durable)
+    def fanout_instance(cls, exchange_name, durable=True):
+        return Exchange(exchange_name, 'fanout', durable)
 
     @classmethod
-    def headers_instance(cls, channel, name, durable):
-        return Exchange(channel, name, 'headers', durable)
+    def headers_instance(cls, exchange_name, durable=True):
+        return Exchange(exchange_name, 'headers', durable)
 
     @classmethod
-    def topic_instance(cls, channel, name, durable):
-        return Exchange(channel, name, 'topic', durable)
+    def topic_instance(cls, exchange_name, durable=True):
+        return Exchange(exchange_name, 'topic', durable)
 
-    def _initialize(self, name, type, is_durable):
-        self._name = name
+    def __init__(self, exchange_name, type, durable):
+        self._exchange_name = exchange_name
         self._type = type
-        self._is_durable = is_durable
-
-        self._exchange = kombu.Exchange(self._name, self._type, durable=self._is_durable)
-        self._producer = kombu.Producer(self.channel, self._exchange)
-
-    @property
-    def exchange(self):
-        return self._exchange
+        self._durable = durable
 
     @property
     def exchange_name(self):
-        return self._name
+        return self._exchange_name
 
-    @property
-    def is_durable(self):
-        return self._is_durable
+    def exchange(self, connection):
+        return kombu.Exchange(channel=connection, name=self._exchange_name,
+                              type=self._type, durable=self._durable)
 
-    def send(self, routing_key, text_message, headers=None):
-        self._producer.publish(text_message, routing_key, headers=headers, content_type='application/json')
-
-
-class Queue(BrokerChannel):
-    @classmethod
-    def durable_instance(cls, channel, name):
-        return Queue(channel, name, durable=True)
-
-    @classmethod
-    def durable_exclusive_instance(cls, channel, name):
-        return Queue(channel, name, durable=True, exclusive=True)
-
-    @classmethod
-    def exchange_subscriber_instance(cls, exchange, routing_keys=None,
-                                     durable=False, exclusive=True,
-                                     auto_delete=True):
-        queue = Queue(exchange.channel, '', durable=durable,
-                      exclusive=exclusive, auto_delete=auto_delete)
-        queue.bind(exchange, *(routing_keys or []))
-        return queue
-
-    @classmethod
-    def individual_exchange_subscriber_instance(cls, exchange, name,
-                                                routing_keys):
-        queue = Queue(exchange.channel, name, durable=True)
-
-        queue.bind(exchange, *routing_keys)
-        return queue
-
-    def _initialize(self, name, durable=False, exclusive=False,
-                    auto_delete=False):
-        self._is_durable = durable
-
-        self._name = name
-        self._exclusive = exclusive
-        self._auto_delete = auto_delete
-
-        self._queues = []
-        self._bindings = []
-
-    @property
-    def queue_name(self):
-        return self._name
-
-    @property
-    def is_durable(self):
-        return self._is_durable
-
-    def bind(self, exchange, *routing_keys):
-        if routing_keys:
-            for routing_key in routing_keys:
-                self._bindings.append(self._bind(exchange, routing_key))
-        else:
-            self._bindings.append([self._bind(exchange)])
-
-    @property
-    def bindings(self):
-        return self._bindings
-
-    def _bind(self, exchange, routing_key=''):
-        queue = kombu.Queue(self.queue_name, exchange=exchange.exchange,
-                            routing_key=routing_key,
-                            durable=self.is_durable, exclusive=self._exclusive,
-                            auto_delete=self._auto_delete,
-                            channel=self.channel)
-        queue.declare()
-        queue.queue_bind()
-        return queue
+    def declare(self, connection):
+        exchange = self.exchange(connection)
+        exchange.declare()
 
 
-class ExchangeListener(object):
-    def __init__(self, channel, listener):
-        exchange = Exchange.direct_instance(channel, listener.exchange_name, True)
-        self._listener = listener
-        queue_name = '%s.%s' % (listener.exchange_name, fullname(listener))
+class WorkerConsumer(object):
+    def __init__(self, listeners):
+        self._listeners = listeners
 
-        listens_to = listener.listens_to
-        if not isinstance(listens_to, (tuple, list)):
-            listens_to = [listens_to]
+    def declare(self, channel, declare=True):
+        consumers = []
+        for listener in self._listeners:
+            exchange = kombu.Exchange(channel=channel, name=listener.exchange_name, type='direct', durable=True)
+            queue_name = '%s.%s' % (listener.exchange_name, fullname(listener))
 
-        listens_to = [a.type_name if not isinstance(a, basestring) else a for a in listens_to]
+            bindings = []
+            for event in listener.listens_to:
+                routing_key = event
+                queue = kombu.Queue(channel=channel, name=queue_name, exchange=exchange, routing_key=routing_key, durable=True)
 
-        self._queue = Queue.individual_exchange_subscriber_instance(
-            exchange, queue_name, listens_to
-        )
-        bindings = self._queue.bindings
+                if declare:
+                    queue.declare()
 
-        self.consumer = kombu.Consumer(channel, queues=bindings, callbacks=[self._handle_delivery])
+                bindings.append(queue)
 
-    def _handle_delivery(self, body, message):
+            consumer = kombu.Consumer(channel, queues=bindings,
+                           callbacks=[functools.partial(self._handle_delivery, listener)])
+
+            consumers.append(consumer)
+
+        return consumers
+
+    def _handle_delivery(self, listener, body, message):
         try:
-            self._listener.dispatch(body)
+            listener.dispatch(body)
             message.ack()
         except Exception, e:
             logging.exception(e)
             raise
 
+
+    def consumers(self, channel):
+        return self.declare(channel, declare=False)
 
 class ListenerMixin(object):
     @property
