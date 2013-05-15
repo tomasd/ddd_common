@@ -98,36 +98,43 @@ class NotificationReader(object):
     def _get_value(self, key):
         original_key = key
         json = self._event
+        original_json = json
 
         try:
             while '.' in key:
                 parent, key = key.split('.', 1)
                 json = json[parent]
+
+            if json is None:
+                raise KeyError('Item at %r is None' % original_key)
             return json[key]
         except KeyError:
-            raise KeyError("Can't find %r in %r" % (original_key, json))
+            raise KeyError("Can't find %r in %r" % (key, json))
 
     def string(self, key):
         value = self._get_value(key)
 
         if value is True or value is False:
             return 'true' if value else 'false'
-        return unicode(value)
+        return unicode(value) if value is not None else value
 
     def int(self, key):
-        return int(self._get_value(key))
+        value = self._get_value(key)
+        return int(value)if value is not None else value
 
     def to_datetime(self, value):
-        return datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+        return datetime.strptime(value, '%Y-%m-%d %H:%M:%S') if value is not None else value
 
     def datetime(self, key):
         return self.to_datetime(self._get_value(key))
 
     def date(self, key):
-        return datetime.strptime(self._get_value(key), '%Y-%m-%d').date()
+        value = self._get_value(key)
+        return datetime.strptime(value, '%Y-%m-%d').date() if value is not None else value
 
     def bool(self, key):
-        return bool(self._get_value(key))
+        value = self._get_value(key)
+        return bool(value) if value is not None else value
 
     def contains(self, key):
         try:
@@ -137,4 +144,5 @@ class NotificationReader(object):
             return False
 
     def decimal(self, key):
-        return Decimal(self._get_value(key))
+        value = self._get_value(key)
+        return Decimal(value) if value is not None else value

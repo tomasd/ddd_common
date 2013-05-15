@@ -66,9 +66,6 @@ class Exchange(BrokerChannel):
     def send(self, routing_key, text_message, headers=None):
         self._producer.publish(text_message, routing_key, headers=headers, content_type='application/json')
 
-    def message_producer(self):
-        return MessageProducer(self)
-
 
 class Queue(BrokerChannel):
     @classmethod
@@ -137,29 +134,6 @@ class Queue(BrokerChannel):
         return queue
 
 
-
-class MessageProducer(object):
-    def __init__(self, exchange):
-        self._exchange = exchange
-
-    def close(self):
-        self._exchange.close()
-
-    def send(self, routing_key, text_message, headers=None):
-        self._exchange.send(routing_key, text_message,
-                            headers=headers,
-                            )
-
-    def __enter__(self):
-        pass
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-        if exc_val:
-            raise
-
-
 class ExchangeListener(object):
     def __init__(self, channel, listener):
         exchange = Exchange.direct_instance(channel, listener.exchange_name, True)
@@ -214,6 +188,7 @@ class ListenerMixin(object):
 
 class MqListener(object):
     def __init__(self, exchange_name, listens_to):
+        assert isinstance(listens_to, list)
         self._exchange_name = exchange_name
         self._listens_to = listens_to
 
@@ -243,18 +218,19 @@ class MqListener(object):
         return False
 
 
-
-
 class Worker(ConsumerMixin):
-    def __init__(self, connection, listeners):
+    def __init__(self, connection, worker_consumer):
         self.connection = connection
-        self._listeners = listeners
+        self._worker_consumer = worker_consumer
 
     def get_consumers(self, Consumer, channel):
+        return self._worker_consumer.consumers(channel)
 
-        consumers = []
-        for listener in self._listeners:
-            a = ExchangeListener(channel, listener)
-            consumers.append(a.consumer)
 
-        return consumers
+class ConnectionFactory(object):
+    def __enter__(self):
+        return kombu.Connection()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_val:
+            raise

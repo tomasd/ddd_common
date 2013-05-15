@@ -102,3 +102,9 @@ class EventsCollector(object):
 
     def handle_event(self, event):
         self.events.append(event)
+
+
+def collect_events():
+    collector = EventsCollector()
+    publisher().subscribe(collector)
+    return collector.events

@@ -32,6 +32,11 @@ class SaRepository(object):
     def add(self, obj):
         self.save(obj)
 
+    def next_id(self):
+        sequence = self._table.c.id.default.next_value()
+        [next_id] = self._session.execute(sequence).fetchone()
+        return next_id
+
 
 class SaEventStore(object):
     def __init__(self, session, testing=False):
