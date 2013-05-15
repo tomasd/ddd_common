@@ -12,5 +12,5 @@ setup(
     author='Tomas Drencak',
     author_email='tomas@drencak.com',
     description='',
-    tests_require=['nose', 'sqlalchemy', 'kombu']
+    tests_require=['nose']
 )
